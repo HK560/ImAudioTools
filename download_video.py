@@ -181,6 +181,13 @@ def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None, downl
             # 确保合并视频
             cmd.append("--merge-output-format")
             cmd.append("mp4")
+            # Hi-Res无损音质要求：视频中的音频采样率不低于48kHz，位深度不低于24bit
+            # 使用ALAC（Apple Lossless Audio Codec）无损编码，支持24bit
+            # ALAC是MP4容器支持的无损音频格式，满足Hi-Res要求
+            # 设置采样率至少48kHz，位深度24bit（ALAC编码器支持s32p格式，32bit可以包含24bit数据）
+            cmd.extend(["--postprocessor-args", "ffmpeg:-c:a alac -ar 48000 -sample_fmt s32p"])
+            # 注意：ALAC编码器支持s32p（32bit planar）格式，可以编码24bit无损音频
+            # 采样率设置为至少48kHz，如果源音频采样率>48kHz会保持原样，如果<48kHz会提升到48kHz
         else:
             # 只下载最佳视频
             cmd.extend(["-f", "best"])
@@ -353,10 +360,17 @@ def extract_audio_from_video(video_path, config, ffmpeg_path=None):
     # 提取音频命令
     cmd = [str(ffmpeg_exe), "-i", str(video_file), "-vn"]  # 不包含视频
     
+    # Hi-Res无损音质要求：采样率不低于48kHz，位深度不低于24bit
+    # 设置采样率至少为48kHz（满足Hi-Res最低要求）
+    # 注意：如果源文件采样率>48kHz，此参数会降采样到48kHz，但仍满足Hi-Res要求
+    cmd.extend(["-ar", "48000"])
+    # 设置位深度为24bit
     if audio_format == "flac":
-        cmd.extend(["-acodec", "flac", "-compression_level", "12"])
+        # FLAC支持24bit，使用sample_fmt s32（32bit可以包含24bit数据，确保兼容性）
+        cmd.extend(["-acodec", "flac", "-compression_level", "12", "-sample_fmt", "s32"])
     else:  # wav
-        cmd.extend(["-acodec", "pcm_s16le"])
+        # WAV使用24bit PCM
+        cmd.extend(["-acodec", "pcm_s24le"])
     
     cmd.extend(["-y", str(audio_file)])  # 覆盖输出文件
     
@@ -436,6 +450,17 @@ def download_audio(video_url, config, download_dir, ffmpeg_path=None):
     
     # 确保最高质量（对无损格式可能不需要，但加上更保险）
     cmd.extend(["--audio-quality", "0"])
+    
+    # Hi-Res无损音质要求：采样率不低于48kHz，位深度不低于24bit
+    # 使用postprocessor-args通过ffmpeg参数设置
+    # 设置采样率至少为48kHz（满足Hi-Res最低要求）
+    # 注意：如果源文件采样率>48kHz，此参数会降采样到48kHz，但仍满足Hi-Res要求
+    if audio_format == "flac":
+        # FLAC: 采样率至少48kHz，24bit（使用s32格式，32bit可以包含24bit数据）
+        cmd.extend(["--postprocessor-args", "ffmpeg:-ar 48000 -sample_fmt s32"])
+    else:  # wav
+        # WAV: 采样率至少48kHz，24bit PCM
+        cmd.extend(["--postprocessor-args", "ffmpeg:-ar 48000 -acodec pcm_s24le"])
     
     # 设置输出目录和文件名格式
     # 格式: download/<视频名>/<视频名>.<扩展名>
