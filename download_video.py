@@ -137,8 +137,16 @@ def find_ytdlp():
     return None
 
 
-def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None):
-    """构建yt-dlp命令"""
+def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None, download_video=True):
+    """构建yt-dlp命令
+    
+    Args:
+        video_url: 视频URL
+        config: 配置字典
+        download_dir: 下载目录
+        ffmpeg_path: ffmpeg路径
+        download_video: 是否下载视频（False时只下载音频）
+    """
     ytdlp_cmd = find_ytdlp()
     
     if not ytdlp_cmd:
@@ -160,29 +168,25 @@ def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None):
     # yt-dlp会自动创建文件夹并清理文件名中的非法字符（保留中文等字符）
     cmd.extend(["-o", os.path.join(download_dir, "%(title)s", "%(title)s.%(ext)s")])
     
-    # 下载视频封面图片（最佳质量）
-    cmd.append("--write-thumbnail")
-    # 将缩略图转换为JPG格式（更通用）
-    cmd.extend(["--convert-thumbnails", "jpg"])
-    
-    # 如果isCombineVideo为True，下载最佳视频+音频并合并
-    if config.get("isCombineVideo", False):
-        # 下载最佳视频格式（视频+音频合并）
-        cmd.extend(["-f", "bestvideo+bestaudio/best"])
-        # 确保合并视频
-        cmd.append("--merge-output-format")
-        cmd.append("mp4")
+    if download_video:
+        # 下载视频封面图片（最佳质量）
+        cmd.append("--write-thumbnail")
+        # 将缩略图转换为JPG格式（更通用）
+        cmd.extend(["--convert-thumbnails", "jpg"])
+        
+        # 如果isCombineVideo为True，下载最佳视频+音频并合并
+        if config.get("isCombineVideo", False):
+            # 下载最佳视频格式（视频+音频合并）
+            cmd.extend(["-f", "bestvideo+bestaudio/best"])
+            # 确保合并视频
+            cmd.append("--merge-output-format")
+            cmd.append("mp4")
+        else:
+            # 只下载最佳视频
+            cmd.extend(["-f", "best"])
     else:
-        # 只下载最佳视频
-        cmd.extend(["-f", "best"])
-    
-    # 如果sperateAudio为True，额外下载音频文件
-    if config.get("sperateAudio", False):
-        # 先下载视频
-        # 然后下载音频
-        # 由于yt-dlp一次只能执行一个操作，我们需要两次调用
-        # 或者使用postprocessor，但更简单的方法是先下载视频，再下载音频
-        pass  # 这个会在主函数中处理
+        # 只下载音频，不下载视频和封面
+        pass
     
     # 添加视频URL
     cmd.append(video_url)
@@ -302,6 +306,102 @@ def convert_thumbnails_to_4_3(download_dir, video_url=None):
     return converted_count
 
 
+def extract_audio_from_video(video_path, config, ffmpeg_path=None):
+    """从已下载的视频文件中提取音频"""
+    if not ffmpeg_path:
+        print("错误: 需要 ffmpeg 才能从视频中提取音频")
+        return False
+    
+    video_file = Path(video_path)
+    if not video_file.exists():
+        print(f"错误: 视频文件不存在: {video_path}")
+        return False
+    
+    # 从配置中读取音频格式
+    audio_format = config.get("audioFormat", "flac").lower()
+    if audio_format not in ["flac", "wav"]:
+        print(f"警告: 不支持的音频格式 {audio_format}，使用 flac")
+        audio_format = "flac"
+    
+    # 构建输出音频文件路径
+    audio_file = video_file.parent / f"{video_file.stem}.{audio_format}"
+    
+    # 如果音频文件已存在，跳过提取
+    if audio_file.exists():
+        print(f"音频文件已存在，跳过提取: {audio_file.name}")
+        return True
+    
+    # 构建 ffmpeg 命令提取音频
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    
+    # 尝试从 ffmpeg_path 目录中找到 ffmpeg
+    ffmpeg_exe = None
+    if ffmpeg_path:
+        ffmpeg_exe_path = Path(ffmpeg_path) / f"ffmpeg{exe_ext}"
+        if ffmpeg_exe_path.exists():
+            ffmpeg_exe = str(ffmpeg_exe_path)
+    
+    # 如果没找到，尝试从系统 PATH 中查找
+    if not ffmpeg_exe:
+        ffmpeg_exe = shutil.which("ffmpeg")
+    
+    if not ffmpeg_exe:
+        print("错误: 未找到 ffmpeg 可执行文件")
+        return False
+    
+    # 提取音频命令
+    cmd = [str(ffmpeg_exe), "-i", str(video_file), "-vn"]  # 不包含视频
+    
+    if audio_format == "flac":
+        cmd.extend(["-acodec", "flac", "-compression_level", "12"])
+    else:  # wav
+        cmd.extend(["-acodec", "pcm_s16le"])
+    
+    cmd.extend(["-y", str(audio_file)])  # 覆盖输出文件
+    
+    print(f"正在从视频中提取音频: {video_file.name} -> {audio_file.name}")
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        print(f"音频提取成功: {audio_file.name}")
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"提取音频时出错: {e}")
+        if e.stderr:
+            print(f"错误信息: {e.stderr}")
+        return False
+
+
+def find_downloaded_video(download_dir, video_url):
+    """查找已下载的视频文件"""
+    download_path = Path(download_dir)
+    video_extensions = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv']
+    
+    # 查找最近下载的视频文件（最近5分钟内）
+    current_time = time.time()
+    recent_videos = []
+    
+    for ext in video_extensions:
+        pattern = f"**/*{ext}"
+        found_files = list(download_path.glob(pattern))
+        
+        for video_file in found_files:
+            # 排除音频文件
+            if video_file.suffix.lower() in ['.m4a', '.mp3', '.flac', '.wav']:
+                continue
+            
+            # 检查是否是最近下载的（5分钟内）
+            file_mtime = video_file.stat().st_mtime
+            if current_time - file_mtime < 300:  # 5分钟内
+                recent_videos.append(video_file)
+    
+    # 按修改时间排序，返回最新的
+    if recent_videos:
+        return sorted(recent_videos, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+    
+    return None
+
+
 def download_audio(video_url, config, download_dir, ffmpeg_path=None):
     """下载音频文件（最高质量无损格式）"""
     ytdlp_cmd = find_ytdlp()
@@ -375,12 +475,16 @@ def main():
     
     # 构建并执行下载命令
     print(f"正在下载视频和封面图片: {video_url}")
-    cmd = build_ytdlp_command(video_url, config, download_dir, ffmpeg_path)
+    cmd = build_ytdlp_command(video_url, config, download_dir, ffmpeg_path, download_video=True)
     
     print(f"执行命令: {' '.join(cmd)}")
+    downloaded_video_path = None
     try:
         result = subprocess.run(cmd, check=True, capture_output=False)
         print("视频和封面图片下载完成！")
+        
+        # 查找刚下载的视频文件
+        downloaded_video_path = find_downloaded_video(download_dir, video_url)
         
         # 自动转换封面图片为4:3比例
         print("\n正在转换封面图片为4:3比例...")
@@ -396,17 +500,39 @@ def main():
     # 如果需要分离音频
     if config.get("sperateAudio", False):
         audio_format = config.get("audioFormat", "flac").upper()
-        print(f"正在下载最高质量无损音频文件（格式: {audio_format}）...")
-        if not ffmpeg_path:
-            print("警告: 未找到ffmpeg，无法转换为无损格式，将下载原始音频")
-        audio_cmd = download_audio(video_url, config, download_dir, ffmpeg_path)
-        print(f"执行命令: {' '.join(audio_cmd)}")
-        try:
-            result = subprocess.run(audio_cmd, check=True, capture_output=False)
-            print(f"无损音频下载完成！（格式: {audio_format}）")
-        except subprocess.CalledProcessError as e:
-            print(f"下载音频时出错: {e}")
-            # 音频下载失败不影响主流程，只警告
+        
+        # 优化：如果已下载了视频文件，尝试从视频中提取音频，避免重复下载
+        if downloaded_video_path and ffmpeg_path:
+            print(f"\n检测到已下载的视频文件，尝试从视频中提取音频（格式: {audio_format}）...")
+            success = extract_audio_from_video(downloaded_video_path, config, ffmpeg_path)
+            if success:
+                print(f"音频提取完成！（格式: {audio_format}）")
+            else:
+                print("从视频提取音频失败，将重新下载音频...")
+                # 如果提取失败，回退到下载方式
+                if not ffmpeg_path:
+                    print("警告: 未找到ffmpeg，无法转换为无损格式，将下载原始音频")
+                audio_cmd = download_audio(video_url, config, download_dir, ffmpeg_path)
+                print(f"执行命令: {' '.join(audio_cmd)}")
+                try:
+                    result = subprocess.run(audio_cmd, check=True, capture_output=False)
+                    print(f"无损音频下载完成！（格式: {audio_format}）")
+                except subprocess.CalledProcessError as e:
+                    print(f"下载音频时出错: {e}")
+                    # 音频下载失败不影响主流程，只警告
+        else:
+            # 如果没有找到视频文件或没有ffmpeg，使用原来的下载方式
+            print(f"正在下载最高质量无损音频文件（格式: {audio_format}）...")
+            if not ffmpeg_path:
+                print("警告: 未找到ffmpeg，无法转换为无损格式，将下载原始音频")
+            audio_cmd = download_audio(video_url, config, download_dir, ffmpeg_path)
+            print(f"执行命令: {' '.join(audio_cmd)}")
+            try:
+                result = subprocess.run(audio_cmd, check=True, capture_output=False)
+                print(f"无损音频下载完成！（格式: {audio_format}）")
+            except subprocess.CalledProcessError as e:
+                print(f"下载音频时出错: {e}")
+                # 音频下载失败不影响主流程，只警告
 
 
 if __name__ == "__main__":
