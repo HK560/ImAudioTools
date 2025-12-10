@@ -1,2 +1,80 @@
-download
-ffmpeg
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 项目特定的输出目录
+download/
+my_downloads/
+output/
+temp/
+tmp/
+
+# 可执行文件（如果需要提交 yt-dlp.exe，可以注释掉这一行）
+*.exe
+
+# 日志文件
+*.log
+
+# 操作系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# 配置文件（如果包含敏感信息，取消注释）
+# config.cfg
+
+# 临时文件
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+
+# 音频/视频输出文件（根据项目需要调整）
+# *.mp4
+# *.mp3
+# *.wav
+# *.flac
+# *.avi
+# *.mkv

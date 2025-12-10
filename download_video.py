@@ -2,14 +2,28 @@
 # -*- coding: utf-8 -*-
 """
 YouTube视频下载脚本
-使用yt-dlp.exe下载视频，支持从config.cfg读取配置
+使用yt-dlp下载视频，支持从config.cfg读取配置
+支持 Windows 和 Linux 平台
 """
 
 import json
 import os
 import sys
 import subprocess
+import platform
+import shutil
+import time
+import glob
 from pathlib import Path
+
+# 导入图像转换函数
+try:
+    from convert_16_9_to_4_3 import convert_16_9_to_4_3
+except ImportError:
+    # 如果导入失败，定义占位函数
+    def convert_16_9_to_4_3(image_path):
+        print(f"警告: 无法导入图像转换模块，跳过封面转换")
+        return None
 
 
 def load_config(config_path="config.cfg"):
@@ -33,8 +47,37 @@ def load_config(config_path="config.cfg"):
         sys.exit(1)
 
 
-def ensure_download_dir():
-    """确保下载目录存在"""
+def ensure_download_dir(config=None):
+    """确保下载目录存在
+    
+    Args:
+        config: 配置字典，可包含 downloadDir 字段指定下载目录
+    
+    Returns:
+        str: 下载目录的绝对路径
+    """
+    # 从配置中读取下载目录
+    if config and config.get("downloadDir"):
+        download_path = config.get("downloadDir")
+        # 尝试使用配置的路径
+        try:
+            download_dir = Path(download_path)
+            # 如果是相对路径，转换为绝对路径
+            if not download_dir.is_absolute():
+                download_dir = Path.cwd() / download_dir
+            # 确保目录存在
+            download_dir.mkdir(parents=True, exist_ok=True)
+            # 验证目录是否可写
+            if download_dir.exists() and download_dir.is_dir() and os.access(download_dir, os.W_OK):
+                return str(download_dir.absolute())
+            else:
+                print(f"警告: 配置的下载目录无效或不可写 '{download_path}'")
+                print("使用默认下载目录: download")
+        except (OSError, ValueError, PermissionError) as e:
+            print(f"警告: 配置的下载目录无效 '{download_path}': {e}")
+            print("使用默认下载目录: download")
+    
+    # 如果配置无效或未配置，使用默认目录
     download_dir = Path("download")
     download_dir.mkdir(exist_ok=True)
     return str(download_dir.absolute())
@@ -42,6 +85,16 @@ def ensure_download_dir():
 
 def find_ffmpeg_path():
     """查找ffmpeg路径"""
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    
+    # 首先检查系统 PATH 中是否有 ffmpeg
+    ffmpeg_cmd = shutil.which("ffmpeg")
+    ffprobe_cmd = shutil.which("ffprobe")
+    if ffmpeg_cmd and ffprobe_cmd:
+        # 如果系统中有 ffmpeg，返回其目录
+        return os.path.dirname(ffmpeg_cmd)
+    
     # 常见的ffmpeg路径位置
     possible_paths = [
         Path("ffmpeg/bin"),  # 当前目录下的ffmpeg/bin
@@ -51,30 +104,48 @@ def find_ffmpeg_path():
     
     # 检查每个可能的路径
     for path in possible_paths:
-        ffmpeg_exe = path / "ffmpeg.exe"
-        ffprobe_exe = path / "ffprobe.exe"
+        ffmpeg_exe = path / f"ffmpeg{exe_ext}"
+        ffprobe_exe = path / f"ffprobe{exe_ext}"
         if ffmpeg_exe.exists() and ffprobe_exe.exists():
             return str(path.absolute())
     
     # 如果在常见位置找不到，尝试搜索整个目录
     current_dir = Path(".")
-    for ffmpeg_dir in current_dir.rglob("ffmpeg.exe"):
-        parent_dir = ffmpeg_dir.parent
-        if (parent_dir / "ffprobe.exe").exists():
+    for ffmpeg_file in current_dir.rglob(f"ffmpeg{exe_ext}"):
+        parent_dir = ffmpeg_file.parent
+        if (parent_dir / f"ffprobe{exe_ext}").exists():
             return str(parent_dir.absolute())
+    
+    return None
+
+
+def find_ytdlp():
+    """查找yt-dlp可执行文件"""
+    # 首先检查系统 PATH 中是否有 yt-dlp
+    ytdlp_cmd = shutil.which("yt-dlp")
+    if ytdlp_cmd:
+        return ytdlp_cmd
+    
+    # 检查当前目录下的 yt-dlp.exe (Windows) 或 yt-dlp (Linux)
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    ytdlp_exe = Path(f"yt-dlp{exe_ext}")
+    
+    if ytdlp_exe.exists():
+        return str(ytdlp_exe.absolute())
     
     return None
 
 
 def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None):
     """构建yt-dlp命令"""
-    ytdlp_exe = Path("yt-dlp.exe")
+    ytdlp_cmd = find_ytdlp()
     
-    if not ytdlp_exe.exists():
-        print(f"错误: {ytdlp_exe} 不存在")
+    if not ytdlp_cmd:
+        print("错误: 未找到 yt-dlp，请确保已安装 yt-dlp")
         sys.exit(1)
     
-    cmd = [str(ytdlp_exe.absolute())]
+    cmd = [ytdlp_cmd]
     
     # 设置代理
     if config.get("proxy"):
@@ -119,10 +190,127 @@ def build_ytdlp_command(video_url, config, download_dir, ffmpeg_path=None):
     return cmd
 
 
+def find_thumbnail_files(download_dir, video_url=None):
+    """
+    查找下载的封面图片文件
+    
+    参数:
+        download_dir: 下载目录路径
+        video_url: 视频URL（可选，用于更精确查找）
+    
+    返回:
+        封面文件路径列表
+    """
+    download_path = Path(download_dir)
+    thumbnail_files = []
+    
+    # 支持的封面文件扩展名
+    thumbnail_extensions = ['.jpg', '.jpeg', '.png', '.webp']
+    # 视频文件扩展名（用于排除）
+    video_extensions = ['.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4a', '.mp3', '.flac', '.wav']
+    
+    # 在下载目录的所有子目录中查找封面文件
+    # yt-dlp通常将封面保存在视频标题命名的子目录中
+    for ext in thumbnail_extensions:
+        # 查找所有子目录中的封面文件
+        pattern = f"**/*{ext}"
+        found_files = list(download_path.glob(pattern))
+        
+        for file_path in found_files:
+            # 排除已经转换过的文件（文件名包含_4_3）
+            if '_4_3' in file_path.stem:
+                continue
+            
+            # 确保是图片文件扩展名
+            if file_path.suffix.lower() not in thumbnail_extensions:
+                continue
+            
+            # 检查同目录下是否有同名但不同扩展名的视频文件
+            # 如果有，说明这是封面文件（因为视频和封面通常同名）
+            is_thumbnail = False
+            parent_dir = file_path.parent
+            base_name = file_path.stem
+            
+            # 检查是否有同名的视频文件（说明这是封面）
+            for video_ext in video_extensions:
+                video_file = parent_dir / f"{base_name}{video_ext}"
+                if video_file.exists():
+                    is_thumbnail = True
+                    break
+            
+            # 如果没有同名视频文件，但文件在子目录中且最近修改，也可能是封面
+            # yt-dlp通常将封面和视频放在同一子目录中
+            if not is_thumbnail:
+                # 检查是否是最近5分钟内创建的文件（可能是刚下载的封面）
+                file_mtime = file_path.stat().st_mtime
+                current_time = time.time()
+                if current_time - file_mtime < 300:  # 5分钟内
+                    # 检查父目录中是否有视频文件（任何扩展名）
+                    has_video = any(
+                        f.suffix.lower() in video_extensions 
+                        for f in parent_dir.iterdir() 
+                        if f.is_file()
+                    )
+                    if has_video:
+                        is_thumbnail = True
+            
+            if is_thumbnail:
+                thumbnail_files.append(file_path)
+    
+    # 去重并按修改时间排序（最新的在前）
+    thumbnail_files = sorted(set(thumbnail_files), key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    return thumbnail_files
+
+
+def convert_thumbnails_to_4_3(download_dir, video_url=None):
+    """
+    将下载的封面图片转换为4:3比例
+    
+    参数:
+        download_dir: 下载目录路径
+        video_url: 视频URL（可选）
+    
+    返回:
+        成功转换的文件数量
+    """
+    print("正在查找封面图片...")
+    
+    # 等待一下，确保文件已完全写入
+    time.sleep(1)
+    
+    thumbnail_files = find_thumbnail_files(download_dir, video_url)
+    
+    if not thumbnail_files:
+        print("未找到封面图片文件")
+        return 0
+    
+    converted_count = 0
+    for thumbnail_path in thumbnail_files:
+        print(f"正在转换封面图片: {thumbnail_path.name}")
+        try:
+            result = convert_16_9_to_4_3(thumbnail_path)
+            if result:
+                converted_count += 1
+                print(f"封面转换成功: {Path(result).name}")
+            else:
+                print(f"封面转换失败: {thumbnail_path.name}")
+        except Exception as e:
+            print(f"转换封面时出错 {thumbnail_path.name}: {e}")
+            # 继续处理其他文件，不中断流程
+    
+    return converted_count
+
+
 def download_audio(video_url, config, download_dir, ffmpeg_path=None):
     """下载音频文件（最高质量无损格式）"""
-    ytdlp_exe = Path("yt-dlp.exe")
-    cmd = [str(ytdlp_exe.absolute())]
+    ytdlp_cmd = find_ytdlp()
+    
+    if not ytdlp_cmd:
+        print("错误: 未找到 yt-dlp，请确保已安装 yt-dlp")
+        sys.exit(1)
+    
+    cmd = [ytdlp_cmd]
     
     # 设置代理
     if config.get("proxy"):
@@ -182,7 +370,7 @@ def main():
         print("警告: 未找到ffmpeg，视频合并和音频转换功能可能无法使用")
     
     # 确保下载目录存在
-    download_dir = ensure_download_dir()
+    download_dir = ensure_download_dir(config)
     print(f"下载目录: {download_dir}")
     
     # 构建并执行下载命令
@@ -193,6 +381,14 @@ def main():
     try:
         result = subprocess.run(cmd, check=True, capture_output=False)
         print("视频和封面图片下载完成！")
+        
+        # 自动转换封面图片为4:3比例
+        print("\n正在转换封面图片为4:3比例...")
+        converted_count = convert_thumbnails_to_4_3(download_dir, video_url)
+        if converted_count > 0:
+            print(f"封面转换完成！成功转换 {converted_count} 个封面图片")
+        else:
+            print("未找到需要转换的封面图片")
     except subprocess.CalledProcessError as e:
         print(f"下载视频时出错: {e}")
         sys.exit(1)

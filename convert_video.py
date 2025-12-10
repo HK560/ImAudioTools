@@ -4,16 +4,29 @@
 视频格式转换脚本
 将视频转换为非压缩或低压缩格式，以便于PR等视频编辑软件编辑
 支持ProRes、DNxHD/DNxHR等编辑友好格式
+支持 Windows 和 Linux 平台
 """
 
 import os
 import sys
 import subprocess
+import platform
+import shutil
 from pathlib import Path
 
 
 def find_ffmpeg_path():
     """查找ffmpeg路径"""
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    
+    # 首先检查系统 PATH 中是否有 ffmpeg
+    ffmpeg_cmd = shutil.which("ffmpeg")
+    ffprobe_cmd = shutil.which("ffprobe")
+    if ffmpeg_cmd and ffprobe_cmd:
+        # 如果系统中有 ffmpeg，返回其目录
+        return os.path.dirname(ffmpeg_cmd)
+    
     # 常见的ffmpeg路径位置
     possible_paths = [
         Path("ffmpeg/bin"),  # 当前目录下的ffmpeg/bin
@@ -23,16 +36,16 @@ def find_ffmpeg_path():
     
     # 检查每个可能的路径
     for path in possible_paths:
-        ffmpeg_exe = path / "ffmpeg.exe"
-        ffprobe_exe = path / "ffprobe.exe"
+        ffmpeg_exe = path / f"ffmpeg{exe_ext}"
+        ffprobe_exe = path / f"ffprobe{exe_ext}"
         if ffmpeg_exe.exists() and ffprobe_exe.exists():
             return str(path.absolute())
     
     # 如果在常见位置找不到，尝试搜索整个目录
     current_dir = Path(".")
-    for ffmpeg_dir in current_dir.rglob("ffmpeg.exe"):
-        parent_dir = ffmpeg_dir.parent
-        if (parent_dir / "ffprobe.exe").exists():
+    for ffmpeg_file in current_dir.rglob(f"ffmpeg{exe_ext}"):
+        parent_dir = ffmpeg_file.parent
+        if (parent_dir / f"ffprobe{exe_ext}").exists():
             return str(parent_dir.absolute())
     
     return None
@@ -42,15 +55,16 @@ def check_gpu_encoder(ffmpeg_exe, encoder_name):
     """检查ffmpeg是否支持指定的GPU编码器
     
     Args:
-        ffmpeg_exe: ffmpeg可执行文件路径
+        ffmpeg_exe: ffmpeg可执行文件路径（可以是 Path 对象或字符串）
         encoder_name: 编码器名称（如h264_nvenc, hevc_amf等）
     
     Returns:
         bool: 如果支持返回True，否则返回False
     """
     try:
+        ffmpeg_cmd = str(ffmpeg_exe) if isinstance(ffmpeg_exe, Path) else ffmpeg_exe
         result = subprocess.run(
-            [str(ffmpeg_exe), "-encoders"],
+            [ffmpeg_cmd, "-encoders"],
             capture_output=True,
             text=True,
             timeout=10
@@ -69,9 +83,17 @@ def detect_available_gpu_encoders(ffmpeg_path):
     Returns:
         dict: 包含可用编码器信息的字典
     """
-    ffmpeg_exe = Path(ffmpeg_path) / "ffmpeg.exe"
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    ffmpeg_exe = Path(ffmpeg_path) / f"ffmpeg{exe_ext}"
+    
+    # 如果路径是目录，检查其中的可执行文件
     if not ffmpeg_exe.exists():
-        return {}
+        # 可能 ffmpeg_path 本身就是可执行文件的路径
+        if os.path.isfile(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
+            ffmpeg_exe = Path(ffmpeg_path)
+        else:
+            return {}
     
     available = {
         "nvenc": False,      # NVIDIA NVENC
@@ -227,10 +249,18 @@ def convert_video_for_editing(video_path, ffmpeg_path=None, format_type="prores"
         print("错误: 未找到ffmpeg，无法转换视频")
         sys.exit(1)
     
-    ffmpeg_exe = Path(ffmpeg_path) / "ffmpeg.exe"
+    is_windows = platform.system() == "Windows"
+    exe_ext = ".exe" if is_windows else ""
+    ffmpeg_exe = Path(ffmpeg_path) / f"ffmpeg{exe_ext}"
+    
+    # 如果路径是目录，检查其中的可执行文件
     if not ffmpeg_exe.exists():
-        print(f"错误: ffmpeg.exe不存在: {ffmpeg_exe}")
-        sys.exit(1)
+        # 可能 ffmpeg_path 本身就是可执行文件的路径
+        if os.path.isfile(ffmpeg_path) and os.access(ffmpeg_path, os.X_OK):
+            ffmpeg_exe = Path(ffmpeg_path)
+        else:
+            print(f"错误: ffmpeg{exe_ext}不存在: {ffmpeg_exe}")
+            sys.exit(1)
     
     # 检测可用的GPU编码器
     gpu_encoders = {}
